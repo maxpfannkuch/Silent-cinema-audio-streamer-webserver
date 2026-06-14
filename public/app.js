@@ -1,7 +1,7 @@
 "use strict";
 
 // Render-WebSocket-URL nach dem Deploy hier eintragen.
-const SYNC_SERVER_URL = "wss://DEINE-RENDER-APP.onrender.com";
+const SYNC_SERVER_URL = "wss://silent-cinema-audio-streamer-webserver.onrender.com";
 
 const AUDIO_URL = "Bohemian_Rhapsody.m4a";
 const START_DELAY_MS = 3000;
