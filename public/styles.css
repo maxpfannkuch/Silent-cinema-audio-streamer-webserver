@@ -114,6 +114,10 @@ h2 {
 }
 
 .join-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
   width: 100%;
   min-height: 68px;
   border: 0;
@@ -126,8 +130,28 @@ h2 {
 }
 
 .join-button:disabled {
-  cursor: wait;
+  cursor: default;
   opacity: 0.72;
+}
+
+.join-button.is-loading {
+  cursor: wait;
+}
+
+.spinner {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  border: 3px solid rgba(4, 47, 46, 0.26);
+  border-top-color: #042f2e;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .hint {
@@ -185,7 +209,32 @@ label {
 output {
   color: var(--accent);
   font-weight: 800;
-  white-space: nowrap;
+  text-align: right;
+}
+
+.offset-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: min(100%, 320px);
+}
+
+.icon-button {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.42);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+.icon-button[hidden] {
+  display: none;
 }
 
 input[type="range"] {
@@ -268,6 +317,15 @@ video {
 
   .transport {
     grid-template-columns: 1fr;
+  }
+
+  .offset-actions {
+    justify-content: space-between;
+    min-width: 0;
+  }
+
+  output {
+    text-align: left;
   }
 }
 

@@ -14,15 +14,22 @@ const MAX_RATE_ADJUSTMENT = 0.005;
 
 const params = new URLSearchParams(window.location.search);
 const isLeader = params.get("role") === "leader";
+const prefersMediaAudio = /iPad|iPhone|iPod/.test(navigator.userAgent)
+  || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
 const els = {
   pageTitle: document.getElementById("pageTitle"),
   roleLabel: document.getElementById("roleLabel"),
   joinButton: document.getElementById("joinButton"),
+  joinButtonText: document.getElementById("joinButtonText"),
+  joinSpinner: document.getElementById("joinSpinner"),
   connectionStatus: document.getElementById("connectionStatus"),
   audioStatus: document.getElementById("audioStatus"),
   syncStatus: document.getElementById("syncStatus"),
   playbackStatus: document.getElementById("playbackStatus"),
+  offsetLabel: document.getElementById("offsetLabel"),
+  offsetHint: document.getElementById("offsetHint"),
+  offsetLockButton: document.getElementById("offsetLockButton"),
   offsetSlider: document.getElementById("offsetSlider"),
   offsetValue: document.getElementById("offsetValue"),
   leaderPanel: document.getElementById("leaderPanel"),
@@ -41,10 +48,16 @@ const state = {
   joined: false,
   audioContext: null,
   audioBuffer: null,
+  audioMode: null,
+  audioElement: null,
+  audioStartTimer: 0,
   source: null,
   sourceStartedAtContext: 0,
   sourceOffset: 0,
   lastKnownPosition: 0,
+  globalOffsetMs: 0,
+  localFineOffsetMs: 0,
+  offsetUnlocked: isLeader,
   serverOffsetMs: 0,
   bestSyncDeltaMs: Infinity,
   wakeLock: null,
@@ -54,6 +67,8 @@ const state = {
   driftTimer: 0,
   resyncTimer: 0,
   seekUiTimer: 0,
+  transportGeneration: 0,
+  loadStartedAt: 0,
 };
 
 init();
@@ -63,15 +78,28 @@ function init() {
     els.pageTitle.textContent = "Film leiten";
     els.roleLabel.textContent = "Leiter";
     els.leaderPanel.hidden = false;
+    els.offsetLabel.textContent = "Globaler Audio-Offset";
+    els.offsetHint.textContent = "Dieser Wert wird an alle verbundenen Geräte verteilt. Positiv startet den Handy-Ton später, negativ früher.";
+    els.offsetLockButton.hidden = true;
+  } else {
+    els.offsetSlider.disabled = true;
+    els.offsetHint.textContent = "Der globale Offset kommt vom Leiter. Für einen lokalen Feinabgleich Schloss drücken.";
   }
 
   els.offsetSlider.addEventListener("input", () => {
-    els.offsetValue.textContent = `${getGlobalOffsetMs()} ms`;
+    if (isLeader) {
+      state.globalOffsetMs = Number(els.offsetSlider.value) || 0;
+      send({ type: "control", action: "offset", globalOffsetMs: state.globalOffsetMs });
+    } else if (state.offsetUnlocked) {
+      state.localFineOffsetMs = Number(els.offsetSlider.value) || 0;
+    }
+    updateOffsetUi();
     if (state.transport.playing && state.audioBuffer) {
       scheduleAudioFromTransport(state.transport, true);
     }
   });
 
+  els.offsetLockButton.addEventListener("click", toggleOffsetLock);
   els.joinButton.addEventListener("click", join);
   els.videoFileInput.addEventListener("change", loadLeaderVideo);
   els.playButton.addEventListener("click", leaderPlay);
@@ -100,22 +128,25 @@ function init() {
 
   connect();
   startSeekUiLoop();
+  updateOffsetUi();
 }
 
 async function join() {
   els.joinButton.disabled = true;
+  setJoinLoading(true);
   setText(els.audioStatus, "Audio wird vorbereitet");
+  state.loadStartedAt = performance.now();
 
   try {
-    state.audioContext = state.audioContext || new (window.AudioContext || window.webkitAudioContext)();
-
-    // iOS/Safari erlaubt AudioContext-Ausgabe erst nach einer echten Nutzergeste.
-    await state.audioContext.resume();
+    if (!prefersMediaAudio) {
+      state.audioContext = state.audioContext || new (window.AudioContext || window.webkitAudioContext)();
+      await state.audioContext.resume();
+    }
     await requestWakeLock();
     await loadAudioBuffer();
 
     state.joined = true;
-    els.joinButton.textContent = "Tonspur bereit";
+    setJoinLoading(false, "Tonspur bereit");
     setText(els.audioStatus, "bereit", "is-ok");
 
     if (state.ws?.readyState === WebSocket.OPEN) {
@@ -129,13 +160,19 @@ async function join() {
   } catch (error) {
     console.error(error);
     els.joinButton.disabled = false;
-    setText(els.audioStatus, "Fehler beim Laden", "is-bad");
-    alert("Die Tonspur konnte nicht geladen werden. Liegt Bohemian_Rhapsody.m4a im public-Ordner und ist die Seite über HTTPS erreichbar?");
+    setJoinLoading(false, "Erneut versuchen");
+    setText(els.audioStatus, getAudioErrorText(error), "is-bad");
+    alert(getAudioErrorHelp(error));
   }
 }
 
 async function loadAudioBuffer() {
-  if (state.audioBuffer) return;
+  if (state.audioBuffer || state.audioElement) return;
+
+  if (prefersMediaAudio) {
+    await loadMediaAudio();
+    return;
+  }
 
   const response = await fetch(AUDIO_URL, { cache: "force-cache" });
   if (!response.ok) {
@@ -143,7 +180,61 @@ async function loadAudioBuffer() {
   }
 
   const data = await response.arrayBuffer();
-  state.audioBuffer = await state.audioContext.decodeAudioData(data);
+  if (data.byteLength > 150 * 1024 * 1024) {
+    console.warn("Große Audiodatei. Für iOS besser Stereo-AAC mit ca. 160 kbit/s verwenden.");
+  }
+  try {
+    state.audioBuffer = await state.audioContext.decodeAudioData(data);
+    state.audioMode = "web-audio";
+  } catch (error) {
+    console.warn("Web Audio decode fehlgeschlagen, nutze HTML-Audio-Fallback:", error);
+    await loadMediaAudio();
+  }
+}
+
+async function loadMediaAudio() {
+  const audio = new Audio();
+  audio.preload = "auto";
+  audio.src = AUDIO_URL;
+  audio.playsInline = true;
+  audio.crossOrigin = "anonymous";
+
+  await new Promise((resolve, reject) => {
+    const cleanup = () => {
+      audio.removeEventListener("canplaythrough", resolveReady);
+      audio.removeEventListener("loadedmetadata", resolveReady);
+      audio.removeEventListener("error", rejectReady);
+    };
+    const resolveReady = () => {
+      cleanup();
+      resolve();
+    };
+    const rejectReady = () => {
+      cleanup();
+      reject(new Error("HTML audio could not load"));
+    };
+
+    audio.addEventListener("canplaythrough", resolveReady, { once: true });
+    audio.addEventListener("loadedmetadata", resolveReady, { once: true });
+    audio.addEventListener("error", rejectReady, { once: true });
+    audio.load();
+  });
+
+  // iOS braucht auch fuer HTMLAudio eine echte Nutzergeste. Kurz stumm starten und wieder pausieren.
+  const previousVolume = audio.volume;
+  audio.volume = 0;
+  try {
+    await audio.play();
+    audio.pause();
+    audio.currentTime = 0;
+  } catch (error) {
+    console.warn("HTML-Audio konnte noch nicht vorgestartet werden:", error);
+  } finally {
+    audio.volume = previousVolume;
+  }
+
+  state.audioElement = audio;
+  state.audioMode = "media";
 }
 
 async function requestWakeLock() {
@@ -258,16 +349,19 @@ function handlePong(message) {
 }
 
 function applyTransportState(nextState) {
+  state.transportGeneration += 1;
   state.transport = {
     playing: Boolean(nextState.playing),
     startServerTime: Number(nextState.startServerTime) || 0,
     position: Number(nextState.position) || 0,
   };
+  state.globalOffsetMs = Number(nextState.globalOffsetMs) || 0;
+  updateOffsetUi();
 
   setText(els.playbackStatus, state.transport.playing ? "läuft" : "pausiert", state.transport.playing ? "is-ok" : "");
 
   if (state.transport.playing) {
-    if (state.audioBuffer) {
+    if (hasAudioReady()) {
       scheduleAudioFromTransport(state.transport, true);
     }
     scheduleLeaderVideo(state.transport);
@@ -281,7 +375,13 @@ function applyTransportState(nextState) {
 }
 
 function scheduleAudioFromTransport(transport, forceRestart = false) {
-  if (!state.audioContext || !state.audioBuffer || !transport.playing) return;
+  if (!hasAudioReady() || !transport.playing) return;
+  if (state.audioMode === "media") {
+    scheduleMediaAudioFromTransport(transport, forceRestart);
+    return;
+  }
+  if (!state.audioContext || !state.audioBuffer) return;
+  const generation = state.transportGeneration;
 
   const targetPosition = clamp(getExpectedAudioPosition(), 0, state.audioBuffer.duration);
   const error = targetPosition - getAudioPosition();
@@ -312,13 +412,22 @@ function scheduleAudioFromTransport(transport, forceRestart = false) {
   state.lastKnownPosition = sourceOffset;
 
   source.onended = () => {
-    if (state.source === source) {
+    if (state.source === source && state.transportGeneration === generation) {
       state.source = null;
     }
   };
 }
 
 function stopAudio() {
+  clearTimeout(state.audioStartTimer);
+  state.audioStartTimer = 0;
+
+  if (state.audioElement) {
+    state.lastKnownPosition = getAudioPosition();
+    state.audioElement.pause();
+    state.audioElement.playbackRate = 1;
+  }
+
   if (!state.source) return;
 
   try {
@@ -333,6 +442,10 @@ function stopAudio() {
 }
 
 function getAudioPosition() {
+  if (state.audioMode === "media" && state.audioElement) {
+    return state.audioElement.currentTime || state.lastKnownPosition;
+  }
+
   if (!state.source || !state.audioContext) {
     return state.lastKnownPosition;
   }
@@ -366,7 +479,17 @@ function stopDriftLoop() {
 function correctDrift() {
   if (!state.transport.playing) return;
 
-  if (state.audioBuffer && state.source) {
+  if (state.audioMode === "media" && state.audioElement && !state.audioElement.paused) {
+    const target = getExpectedAudioPosition();
+    const error = target - getAudioPosition();
+
+    if (Math.abs(error) > SMALL_DRIFT_LIMIT_S) {
+      state.audioElement.currentTime = clamp(target, 0, getAudioDuration());
+      state.audioElement.playbackRate = 1;
+    } else {
+      state.audioElement.playbackRate = 1 + clamp(error * RATE_CORRECTION_GAIN, -MAX_RATE_ADJUSTMENT, MAX_RATE_ADJUSTMENT);
+    }
+  } else if (state.audioBuffer && state.source) {
     const target = getExpectedAudioPosition();
     const error = target - getAudioPosition();
 
@@ -412,7 +535,40 @@ function getServerNowMs() {
 }
 
 function getGlobalOffsetMs() {
-  return Number(els.offsetSlider.value) || 0;
+  return state.globalOffsetMs + state.localFineOffsetMs;
+}
+
+function scheduleMediaAudioFromTransport(transport) {
+  const audio = state.audioElement;
+  if (!audio) return;
+
+  clearTimeout(state.audioStartTimer);
+  const generation = state.transportGeneration;
+  const targetPosition = clamp(getExpectedAudioPosition(), 0, getAudioDuration());
+  const startLocalPerformanceMs = transport.startServerTime - state.serverOffsetMs + getGlobalOffsetMs();
+  const delayMs = startLocalPerformanceMs - performance.now();
+
+  audio.pause();
+  audio.playbackRate = 1;
+
+  if (delayMs > 30) {
+    audio.currentTime = clamp(transport.position, 0, getAudioDuration());
+    state.lastKnownPosition = audio.currentTime;
+    state.audioStartTimer = window.setTimeout(() => {
+      if (!state.transport.playing || state.transportGeneration !== generation) return;
+      audio.play().catch((error) => {
+        console.warn("Audio konnte nicht starten:", error);
+        setText(els.audioStatus, "Start blockiert", "is-bad");
+      });
+    }, delayMs);
+  } else {
+    audio.currentTime = targetPosition;
+    state.lastKnownPosition = targetPosition;
+    audio.play().catch((error) => {
+      console.warn("Audio konnte nicht starten:", error);
+      setText(els.audioStatus, "Start blockiert", "is-bad");
+    });
+  }
 }
 
 function leaderPlay() {
@@ -454,13 +610,14 @@ function loadLeaderVideo() {
 function scheduleLeaderVideo(transport) {
   if (!isLeader || !els.leaderVideo.src) return;
 
+  const generation = state.transportGeneration;
   const position = clamp(getExpectedPosition(), 0, getLeaderDuration());
   const delayMs = Math.max(0, transport.startServerTime - getServerNowMs());
   els.leaderVideo.currentTime = position;
   els.leaderVideo.muted = true;
 
   window.setTimeout(() => {
-    if (!state.transport.playing) return;
+    if (!state.transport.playing || state.transportGeneration !== generation) return;
     els.leaderVideo.play().catch((error) => {
       console.warn("Video konnte nicht automatisch starten:", error);
     });
@@ -484,6 +641,16 @@ function getLeaderDuration() {
   return Number.isFinite(els.leaderVideo.duration) ? els.leaderVideo.duration : 0;
 }
 
+function getAudioDuration() {
+  if (state.audioBuffer) return state.audioBuffer.duration;
+  if (state.audioElement && Number.isFinite(state.audioElement.duration)) return state.audioElement.duration;
+  return 0;
+}
+
+function hasAudioReady() {
+  return Boolean(state.audioBuffer || state.audioElement);
+}
+
 function startSeekUiLoop() {
   clearInterval(state.seekUiTimer);
   state.seekUiTimer = window.setInterval(() => {
@@ -497,6 +664,71 @@ function setText(element, text, className = "") {
   element.textContent = text;
   element.classList.remove("is-ok", "is-bad");
   if (className) element.classList.add(className);
+}
+
+function setJoinLoading(isLoading, text) {
+  els.joinButton.classList.toggle("is-loading", isLoading);
+  els.joinSpinner.hidden = !isLoading;
+  if (text) {
+    els.joinButtonText.textContent = text;
+  } else if (isLoading) {
+    els.joinButtonText.textContent = "Ton wird vorbereitet";
+  }
+}
+
+function toggleOffsetLock() {
+  if (isLeader) return;
+
+  state.offsetUnlocked = !state.offsetUnlocked;
+  if (!state.offsetUnlocked) {
+    state.localFineOffsetMs = 0;
+  }
+  updateOffsetUi();
+
+  if (state.transport.playing && state.audioBuffer) {
+    scheduleAudioFromTransport(state.transport, true);
+  }
+}
+
+function updateOffsetUi() {
+  if (isLeader) {
+    els.offsetSlider.disabled = false;
+    els.offsetSlider.value = String(state.globalOffsetMs);
+    els.offsetValue.textContent = `${state.globalOffsetMs} ms`;
+    return;
+  }
+
+  els.offsetSlider.disabled = !state.offsetUnlocked;
+  els.offsetLockButton.textContent = state.offsetUnlocked ? "🔓" : "🔒";
+  els.offsetLockButton.setAttribute("aria-label", state.offsetUnlocked ? "Offset sperren" : "Offset entsperren");
+  els.offsetLockButton.title = state.offsetUnlocked ? "Offset sperren" : "Offset entsperren";
+
+  if (state.offsetUnlocked) {
+    els.offsetSlider.value = String(state.localFineOffsetMs);
+    els.offsetValue.textContent = `lokal ${formatSignedMs(state.localFineOffsetMs)} / gesamt ${formatSignedMs(getGlobalOffsetMs())}`;
+    els.offsetHint.textContent = "Lokaler Feinabgleich ist aktiv. Er gilt nur auf diesem Gerät.";
+  } else {
+    els.offsetSlider.value = String(state.globalOffsetMs);
+    els.offsetValue.textContent = `Leiter ${formatSignedMs(state.globalOffsetMs)}`;
+    els.offsetHint.textContent = "Der globale Offset kommt vom Leiter. Für einen lokalen Feinabgleich Schloss drücken.";
+  }
+}
+
+function getAudioErrorText(error) {
+  if (String(error?.message || "").includes("Audio fetch failed")) {
+    return "Datei nicht erreichbar";
+  }
+  return "Fehler beim Laden";
+}
+
+function getAudioErrorHelp(error) {
+  const detail = error?.message ? `\n\nTechnik: ${error.message}` : "";
+  return `Die Tonspur konnte nicht geladen werden. Auf iOS klappt es am zuverlässigsten mit Stereo-AAC (.m4a, 48 kHz, ca. 160 kbit/s). Bitte Website-Daten fuer audio.maxpfannkuch.de löschen und danach neu beitreten.${detail}`;
+}
+
+function formatSignedMs(value) {
+  const rounded = Math.round(value);
+  return `${rounded > 0 ? "+" : ""}${rounded} ms`;
 }
 
 function clamp(value, min, max) {

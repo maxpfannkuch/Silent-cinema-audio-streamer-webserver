@@ -23,7 +23,10 @@
       </section>
 
       <section class="panel primary-panel">
-        <button id="joinButton" class="join-button" type="button">Beitreten und Ton laden</button>
+        <button id="joinButton" class="join-button" type="button">
+          <span id="joinSpinner" class="spinner" aria-hidden="true" hidden></span>
+          <span id="joinButtonText">Beitreten und Ton laden</span>
+        </button>
         <p class="hint">
           Bitte vor dem Film antippen und warten, bis die Tonspur bereit ist. Auf iPhone und Android muss Audio durch diese Geste freigegeben werden.
         </p>
@@ -49,11 +52,14 @@
 
       <section class="panel">
         <div class="control-row">
-          <label for="offsetSlider">Audio-Offset zum Beamer</label>
-          <output id="offsetValue" for="offsetSlider">0 ms</output>
+          <label id="offsetLabel" for="offsetSlider">Audio-Offset zum Beamer</label>
+          <div class="offset-actions">
+            <button id="offsetLockButton" class="icon-button" type="button" aria-label="Offset entsperren" title="Offset entsperren">🔒</button>
+            <output id="offsetValue" for="offsetSlider">0 ms</output>
+          </div>
         </div>
         <input id="offsetSlider" type="range" min="-1000" max="1000" value="0" step="10">
-        <p class="hint">
+        <p class="hint" id="offsetHint">
           Positiv startet den Handy-Ton später, negativ früher. Am besten einmal gemeinsam einmessen.
         </p>
       </section>

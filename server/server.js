@@ -12,6 +12,7 @@ let transportState = {
   playing: false,
   startServerTime: 0,
   position: 0,
+  globalOffsetMs: 0,
 };
 
 const server = http.createServer((req, res) => {
@@ -103,6 +104,7 @@ function applyControl(message) {
       playing: true,
       startServerTime: sanitizeTime(message.startServerTime || now() + 3000),
       position,
+      globalOffsetMs: transportState.globalOffsetMs,
     };
     broadcastState();
     return;
@@ -113,6 +115,7 @@ function applyControl(message) {
       playing: false,
       startServerTime: 0,
       position,
+      globalOffsetMs: transportState.globalOffsetMs,
     };
     broadcastState();
     return;
@@ -124,14 +127,25 @@ function applyControl(message) {
         playing: true,
         startServerTime: now() + 1000,
         position,
+        globalOffsetMs: transportState.globalOffsetMs,
       };
     } else {
       transportState = {
         playing: false,
         startServerTime: 0,
         position,
+        globalOffsetMs: transportState.globalOffsetMs,
       };
     }
+    broadcastState();
+    return;
+  }
+
+  if (message.action === "offset") {
+    transportState = {
+      ...transportState,
+      globalOffsetMs: sanitizeOffset(message.globalOffsetMs),
+    };
     broadcastState();
   }
 }
@@ -146,6 +160,7 @@ function getCurrentTransportState() {
     playing: true,
     startServerTime: transportState.startServerTime,
     position: transportState.position + elapsed,
+    globalOffsetMs: transportState.globalOffsetMs,
   };
 }
 
@@ -192,6 +207,12 @@ function sanitizeTime(value) {
   const time = Number(value);
   if (!Number.isFinite(time) || time < 0) return now();
   return time;
+}
+
+function sanitizeOffset(value) {
+  const offset = Number(value);
+  if (!Number.isFinite(offset)) return 0;
+  return Math.min(1000, Math.max(-1000, Math.round(offset)));
 }
 
 function randomId() {
