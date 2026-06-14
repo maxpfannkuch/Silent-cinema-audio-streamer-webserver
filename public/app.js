@@ -8,9 +8,11 @@ const START_DELAY_MS = 3000;
 const SYNC_SAMPLE_COUNT = 20;
 const RESYNC_INTERVAL_MS = 10000;
 const DRIFT_INTERVAL_MS = 2000;
-const SMALL_DRIFT_LIMIT_S = 0.5;
-const RATE_CORRECTION_GAIN = 0.08;
-const MAX_RATE_ADJUSTMENT = 0.005;
+const WEB_AUDIO_RESCHEDULE_LIMIT_S = 1.2;
+const MEDIA_SEEK_LIMIT_S = 0.35;
+const MEDIA_RATE_LIMIT_S = 0.12;
+const WEB_AUDIO_RATE_CORRECTION_GAIN = 0.025;
+const MAX_WEB_AUDIO_RATE_ADJUSTMENT = 0.002;
 
 const params = new URLSearchParams(window.location.search);
 const isLeader = params.get("role") === "leader";
@@ -54,6 +56,10 @@ const state = {
   source: null,
   sourceStartedAtContext: 0,
   sourceOffset: 0,
+  sourceStartedAtPerformance: 0,
+  sourceRate: 1,
+  sourceRateSetAtPerformance: 0,
+  sourcePositionAtRateSet: 0,
   lastKnownPosition: 0,
   globalOffsetMs: 0,
   localFineOffsetMs: 0,
@@ -62,6 +68,7 @@ const state = {
   bestSyncDeltaMs: Infinity,
   wakeLock: null,
   transport: { playing: false, startServerTime: 0, position: 0 },
+  lastTransportKey: "",
   syncRequests: new Map(),
   reconnectTimer: 0,
   driftTimer: 0,
@@ -349,28 +356,43 @@ function handlePong(message) {
 }
 
 function applyTransportState(nextState) {
-  state.transportGeneration += 1;
-  state.transport = {
+  const previousOffset = state.globalOffsetMs;
+  const nextTransport = {
     playing: Boolean(nextState.playing),
     startServerTime: Number(nextState.startServerTime) || 0,
     position: Number(nextState.position) || 0,
   };
-  state.globalOffsetMs = Number(nextState.globalOffsetMs) || 0;
+  const nextOffset = Number(nextState.globalOffsetMs) || 0;
+  const nextTransportKey = `${nextTransport.playing}:${nextTransport.startServerTime}:${nextTransport.position}`;
+  const transportChanged = nextTransportKey !== state.lastTransportKey;
+
+  if (transportChanged) {
+    state.transportGeneration += 1;
+    state.lastTransportKey = nextTransportKey;
+  }
+
+  const offsetChanged = nextOffset !== previousOffset;
+  state.transport = {
+    ...nextTransport,
+  };
+  state.globalOffsetMs = nextOffset;
   updateOffsetUi();
 
   setText(els.playbackStatus, state.transport.playing ? "läuft" : "pausiert", state.transport.playing ? "is-ok" : "");
 
-  if (state.transport.playing) {
+  if (state.transport.playing && transportChanged) {
     if (hasAudioReady()) {
       scheduleAudioFromTransport(state.transport, true);
     }
     scheduleLeaderVideo(state.transport);
     startDriftLoop();
-  } else {
+  } else if (!state.transport.playing && transportChanged) {
     state.lastKnownPosition = state.transport.position;
     stopAudio();
     pauseLeaderVideo(state.transport.position);
     stopDriftLoop();
+  } else if (state.transport.playing && offsetChanged) {
+    correctDrift();
   }
 }
 
@@ -386,7 +408,7 @@ function scheduleAudioFromTransport(transport, forceRestart = false) {
   const targetPosition = clamp(getExpectedAudioPosition(), 0, state.audioBuffer.duration);
   const error = targetPosition - getAudioPosition();
 
-  if (!forceRestart && state.source && Math.abs(error) <= SMALL_DRIFT_LIMIT_S) {
+  if (!forceRestart && state.source && Math.abs(error) <= WEB_AUDIO_RESCHEDULE_LIMIT_S) {
     adjustPlaybackRate(error);
     return;
   }
@@ -408,7 +430,11 @@ function scheduleAudioFromTransport(transport, forceRestart = false) {
 
   state.source = source;
   state.sourceStartedAtContext = startAt;
+  state.sourceStartedAtPerformance = performance.now() + Math.max(0, (startAt - now) * 1000);
   state.sourceOffset = clamp(sourceOffset, 0, state.audioBuffer.duration);
+  state.sourceRate = 1;
+  state.sourceRateSetAtPerformance = state.sourceStartedAtPerformance;
+  state.sourcePositionAtRateSet = state.sourceOffset;
   state.lastKnownPosition = sourceOffset;
 
   source.onended = () => {
@@ -450,8 +476,8 @@ function getAudioPosition() {
     return state.lastKnownPosition;
   }
 
-  const elapsed = Math.max(0, state.audioContext.currentTime - state.sourceStartedAtContext);
-  return state.sourceOffset + elapsed * state.source.playbackRate.value;
+  const elapsed = Math.max(0, (performance.now() - state.sourceRateSetAtPerformance) / 1000);
+  return state.sourcePositionAtRateSet + elapsed * state.sourceRate;
 }
 
 function performanceTimeToContextTime(performanceTimeMs) {
@@ -483,17 +509,19 @@ function correctDrift() {
     const target = getExpectedAudioPosition();
     const error = target - getAudioPosition();
 
-    if (Math.abs(error) > SMALL_DRIFT_LIMIT_S) {
+    if (Math.abs(error) > MEDIA_SEEK_LIMIT_S) {
       state.audioElement.currentTime = clamp(target, 0, getAudioDuration());
       state.audioElement.playbackRate = 1;
+    } else if (Math.abs(error) > MEDIA_RATE_LIMIT_S) {
+      state.audioElement.playbackRate = error > 0 ? 1.002 : 0.998;
     } else {
-      state.audioElement.playbackRate = 1 + clamp(error * RATE_CORRECTION_GAIN, -MAX_RATE_ADJUSTMENT, MAX_RATE_ADJUSTMENT);
+      state.audioElement.playbackRate = 1;
     }
   } else if (state.audioBuffer && state.source) {
     const target = getExpectedAudioPosition();
     const error = target - getAudioPosition();
 
-    if (Math.abs(error) > SMALL_DRIFT_LIMIT_S) {
+    if (Math.abs(error) > WEB_AUDIO_RESCHEDULE_LIMIT_S) {
       scheduleAudioFromTransport(state.transport, true);
     } else {
       adjustPlaybackRate(error);
@@ -510,8 +538,11 @@ function correctDrift() {
 
 function adjustPlaybackRate(error) {
   if (!state.source) return;
-  const adjustment = clamp(error * RATE_CORRECTION_GAIN, -MAX_RATE_ADJUSTMENT, MAX_RATE_ADJUSTMENT);
-  state.source.playbackRate.value = 1 + adjustment;
+  state.sourcePositionAtRateSet = getAudioPosition();
+  state.sourceRateSetAtPerformance = performance.now();
+  const adjustment = clamp(error * WEB_AUDIO_RATE_CORRECTION_GAIN, -MAX_WEB_AUDIO_RATE_ADJUSTMENT, MAX_WEB_AUDIO_RATE_ADJUSTMENT);
+  state.sourceRate = 1 + adjustment;
+  state.source.playbackRate.value = state.sourceRate;
 }
 
 function getExpectedPosition() {
@@ -538,9 +569,14 @@ function getGlobalOffsetMs() {
   return state.globalOffsetMs + state.localFineOffsetMs;
 }
 
-function scheduleMediaAudioFromTransport(transport) {
+function scheduleMediaAudioFromTransport(transport, forceRestart = false) {
   const audio = state.audioElement;
   if (!audio) return;
+
+  if (!forceRestart && !audio.paused) {
+    correctDrift();
+    return;
+  }
 
   clearTimeout(state.audioStartTimer);
   const generation = state.transportGeneration;
@@ -687,6 +723,8 @@ function toggleOffsetLock() {
 
   if (state.transport.playing && state.audioBuffer) {
     scheduleAudioFromTransport(state.transport, true);
+  } else if (state.transport.playing && state.audioElement) {
+    correctDrift();
   }
 }
 
