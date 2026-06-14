@@ -1,0 +1,8 @@
+node_modules/
+.DS_Store
+npm-debug.log*
+
+# Large local media files are deployed or selected separately, not committed.
+*.mkv
+*.mp4
+public/*.m4a

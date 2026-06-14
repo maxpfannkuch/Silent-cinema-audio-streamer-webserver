@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#111827">
+    <title>Silent Cinema Audio</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Silent Cinema</p>
+          <h1 id="pageTitle">Tonspur synchronisieren</h1>
+        </div>
+        <div class="role-pill" id="roleLabel">Zuhörer</div>
+      </section>
+
+      <section class="notice">
+        <strong>Kabelkopfhörer verwenden.</strong>
+        Bluetooth hat schwankende Latenz und ist für lippensynchronen Ton ungeeignet.
+      </section>
+
+      <section class="panel primary-panel">
+        <button id="joinButton" class="join-button" type="button">Beitreten und Ton laden</button>
+        <p class="hint">
+          Bitte vor dem Film antippen und warten, bis die Tonspur bereit ist. Auf iPhone und Android muss Audio durch diese Geste freigegeben werden.
+        </p>
+        <div class="status-grid">
+          <div>
+            <span>Verbindung</span>
+            <strong id="connectionStatus">getrennt</strong>
+          </div>
+          <div>
+            <span>Tonspur</span>
+            <strong id="audioStatus">nicht geladen</strong>
+          </div>
+          <div>
+            <span>Synchronität</span>
+            <strong id="syncStatus">wartet</strong>
+          </div>
+          <div>
+            <span>Wiedergabe</span>
+            <strong id="playbackStatus">gestoppt</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="control-row">
+          <label for="offsetSlider">Audio-Offset zum Beamer</label>
+          <output id="offsetValue" for="offsetSlider">0 ms</output>
+        </div>
+        <input id="offsetSlider" type="range" min="-1000" max="1000" value="0" step="10">
+        <p class="hint">
+          Positiv startet den Handy-Ton später, negativ früher. Am besten einmal gemeinsam einmessen.
+        </p>
+      </section>
+
+      <section class="panel leader-only" id="leaderPanel" hidden>
+        <div class="leader-header">
+          <div>
+            <h2>Leiter-Bedienfeld</h2>
+            <p class="hint">Das Video bleibt lokal auf diesem Laptop und wird nicht hochgeladen.</p>
+          </div>
+          <div class="client-count">
+            <span>verbundene Geräte</span>
+            <strong id="clientCount">0</strong>
+          </div>
+        </div>
+
+        <label class="file-picker">
+          <span>Videodatei wählen</span>
+          <input id="videoFileInput" type="file" accept="video/*">
+        </label>
+
+        <video id="leaderVideo" playsinline muted controls></video>
+
+        <div class="transport">
+          <button id="playButton" type="button">Start</button>
+          <button id="pauseButton" type="button">Pause</button>
+        </div>
+
+        <div class="control-row">
+          <label for="seekSlider">Position</label>
+          <output id="seekValue" for="seekSlider">00:00</output>
+        </div>
+        <input id="seekSlider" type="range" min="0" max="0" value="0" step="0.1" disabled>
+      </section>
+
+      <section class="panel checklist">
+        <h2>Vor dem Start</h2>
+        <ul>
+          <li>Auto-Sperre am Handy möglichst ausschalten.</li>
+          <li>Diese Seite vorab öffnen, damit die Tonspur lokal gecacht wird.</li>
+          <li>Während des Films diese Seite sichtbar lassen.</li>
+        </ul>
+      </section>
+    </main>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>
