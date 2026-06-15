@@ -245,7 +245,7 @@ const server = http.createServer((req, res) => {
 
   // Static files
   if (req.method === "GET") {
-    const safeName = pathname === "/" || pathname === "" ? "index.html" : pathname;
+    const safeName = (pathname === "/" || pathname === "") ? "/index.html" : pathname;
     const filePath = path.resolve(PUBLIC_DIR, "." + safeName);
 
     // Prevent path traversal
