@@ -5,9 +5,39 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="theme-color" content="#111827">
     <title>Silent Cinema Audio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
+
+    <!-- Token gate — hidden via CSS (#tokenGate { display: none }) until JS adds .is-visible -->
+    <div id="tokenGate" class="token-gate">
+      <div class="token-gate-box panel">
+        <p class="eyebrow">Silent Cinema</p>
+        <h2>Willkommen</h2>
+        <p class="hint">Gib den Zugangscode ein, den du vom Veranstalter erhalten hast.</p>
+        <input id="tokenInput" class="token-input" type="text"
+               placeholder="Zugangscode" autocomplete="off"
+               autocorrect="off" autocapitalize="none" spellcheck="false">
+        <div class="role-choice">
+          <label class="role-option">
+            <input type="radio" name="gateRole" value="listener" checked>
+            <span>Zuhörer</span>
+          </label>
+          <label class="role-option">
+            <input type="radio" name="gateRole" value="leader">
+            <span>Leiter</span>
+          </label>
+        </div>
+        <button id="tokenSubmitBtn" class="join-button" type="button">Beitreten</button>
+        <p class="hint" style="margin-top: 10px; font-size: 0.8rem; text-align: center;">
+          Ohne Code: Feld leer lassen und Beitreten drücken.
+        </p>
+      </div>
+    </div>
+
     <main class="app-shell">
       <section class="hero">
         <div>
@@ -27,7 +57,7 @@
           <span id="joinSpinner" class="spinner" aria-hidden="true" hidden></span>
           <span id="joinButtonText">Beitreten und Ton laden</span>
         </button>
-        <p class="hint">
+        <p class="hint" id="joinHint">
           Bitte vor dem Film antippen und warten, bis die Tonspur bereit ist. Auf iPhone und Android muss Audio durch diese Geste freigegeben werden.
         </p>
         <div class="status-grid">
@@ -68,7 +98,6 @@
         <div class="leader-header">
           <div>
             <h2>Leiter-Bedienfeld</h2>
-            <p class="hint">Das Video bleibt lokal auf diesem Laptop und wird nicht hochgeladen.</p>
           </div>
           <div class="client-count">
             <span>verbundene Geräte</span>
@@ -76,23 +105,66 @@
           </div>
         </div>
 
-        <label class="file-picker">
-          <span>Videodatei wählen</span>
-          <input id="videoFileInput" type="file" accept="video/*">
-        </label>
+        <!-- ── Vorbereitung ── -->
+        <div class="leader-section">
+          <p class="leader-section-title">Vorbereitung</p>
 
-        <video id="leaderVideo" playsinline muted controls></video>
+          <!-- Invite link -->
+          <div class="invite-section" id="inviteSection" hidden>
+            <p class="hint" style="margin-bottom: 6px;">Einladungslink für Zuhörer:</p>
+            <div class="invite-row">
+              <code id="inviteLink" class="invite-link"></code>
+              <button id="copyInviteBtn" class="copy-button" type="button">Link kopieren</button>
+            </div>
+          </div>
 
-        <div class="transport">
-          <button id="playButton" type="button">Start</button>
-          <button id="pauseButton" type="button">Pause</button>
+          <!-- Audio upload zone -->
+          <p class="hint" style="margin-bottom: 8px;">
+            Tonspur hochladen – wird an alle Zuhörer verteilt. Das Video bleibt lokal.
+          </p>
+          <div class="upload-zone" id="uploadZone">
+            <span class="upload-zone-icon" aria-hidden="true">🎵</span>
+            <p class="upload-zone-label">Audiodatei hier ablegen</p>
+            <p class="upload-zone-sub">oder antippen zum Auswählen · MP3, M4A, OGG bis 300 MB</p>
+            <span class="upload-zone-file" id="uploadFileName"></span>
+            <input id="audioFileInput" type="file" accept="audio/*" aria-label="Audiodatei auswählen">
+          </div>
+          <div id="uploadProgressBox" class="upload-progress-box" hidden>
+            <div class="progress-track">
+              <div class="progress-fill" id="uploadProgressFill"></div>
+            </div>
+            <p class="upload-status" id="uploadStatus"></p>
+          </div>
         </div>
 
-        <div class="control-row">
-          <label for="seekSlider">Position</label>
-          <output id="seekValue" for="seekSlider">00:00</output>
+        <!-- ── Vorstellung ── -->
+        <div class="leader-section">
+          <p class="leader-section-title">Vorstellung</p>
+
+          <label class="file-picker">
+            <span>Videodatei wählen (nur lokal, wird nicht hochgeladen)</span>
+            <input id="videoFileInput" type="file" accept="video/*">
+          </label>
+
+          <video id="leaderVideo" playsinline muted controls></video>
+
+          <div class="transport">
+            <button id="playPauseButton" type="button">Start</button>
+          </div>
+
+          <button id="syncSignalBtn" class="sync-btn" type="button">
+            Sync-Ton senden (Piep + Blitz)
+          </button>
+          <p class="hint" style="margin-bottom: 14px; font-size: 0.78rem;">
+            Alle Geräte piepen &amp; blinken gleichzeitig. Zuhörer passen den Offset-Regler an, bis Ton und Bild übereinstimmen.
+          </p>
+
+          <div class="control-row">
+            <label for="seekSlider">Position</label>
+            <output id="seekValue" for="seekSlider">00:00</output>
+          </div>
+          <input id="seekSlider" type="range" min="0" max="0" value="0" step="0.1" disabled>
         </div>
-        <input id="seekSlider" type="range" min="0" max="0" value="0" step="0.1" disabled>
       </section>
 
       <section class="panel checklist">
@@ -105,6 +177,11 @@
       </section>
     </main>
 
+    <footer class="page-footer">
+      <button id="switchRoleBtn" type="button">Rolle wechseln</button>
+    </footer>
+
+    <div id="syncFlash" aria-hidden="true"></div>
     <script src="app.js" defer></script>
   </body>
 </html>

@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE_NAME = "silent-cinema-v6";
+const CACHE_NAME = "silent-cinema-v10";
 const PRECACHE_URLS = [
   "./",
   "./index.html",
